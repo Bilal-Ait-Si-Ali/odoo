@@ -1,4 +1,4 @@
-from odoo import fields, models, api
+from odoo import fields, models, api, exceptions
 from datetime import date
 from dateutil import relativedelta
 
@@ -30,7 +30,7 @@ class EstateProperty(models.Model):
     state = fields.Selection(
         required=True,
         copy=False,
-        string='State',
+        string='Status',
         selection=[
             ('new', 'New'),
             ('offer received', 'Offer Received'),
@@ -60,18 +60,25 @@ class EstateProperty(models.Model):
     def _onchange_garden(self):
         self.garden_area, self.garden_orientation = (10, 'north') if self.garden else (False, False)
 
+    def action_sold(self):
+        if self.state == 'canceled':
+            raise exceptions.UserError("Canceled property cannot be sold.")
+        self.state = 'sold'
+        return
+
+    def action_cancel(self):
+        if self.state == 'sold':
+            raise exceptions.UserError("Sold property cannot be canceled.")
+        self.state = 'canceled'
+        return
+
 
 class EstatePropertyOffer(models.Model):
     _name = "estate.property.offer"
     _description = "Estate Property Offer"
 
     price = fields.Float()
-    status = fields.Selection(copy=False,
-                              selection=[
-                                  ('accepted', 'Accepted'),
-                                  ('refused', 'Refused'),
-                              ]
-                              )
+    status = fields.Selection(copy=False, selection=[('accepted', 'Accepted'), ('refused', 'Refused')])
     partner_id = fields.Many2one('res.partner', required=True)
     property_id = fields.Many2one('estate.property', required=True)
     validity = fields.Integer('validity (Days)', default=7)
@@ -86,6 +93,24 @@ class EstatePropertyOffer(models.Model):
 
     @api.onchange('date_deadline')
     def _inverse_compute_date_deadline(self):
+        if self.date_deadline:
+            create_date = date.today()
+            if self.create_date:
+                create_date = self.create_date.date()
+            self.validity = (self.date_deadline - create_date).days
+
+    def action_accepted(self):
         for rec in self:
-            if rec.date_deadline:
-                rec.validity = (rec.date_deadline - (rec.create_date.date() or date.today())).days
+            for r in rec.property_id.offer_ids:
+                r.action_refused()
+            rec.status = 'accepted'
+            rec.property_id.selling_price = rec.price
+            rec.property_id.buyer_id = rec.partner_id
+        return
+
+    def action_refused(self):
+        for rec in self:
+            rec.status = 'refused'
+            rec.property_id.selling_price = 0
+            rec.property_id.buyer_id = False
+        return
