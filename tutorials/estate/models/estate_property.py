@@ -1,6 +1,8 @@
 from odoo import fields, models, api, exceptions
 from datetime import date
 from dateutil import relativedelta
+from odoo.exceptions import ValidationError, UserError
+from odoo.tools import float_compare, float_is_zero, float_repr, float_round, float_split, float_split_str
 
 
 class EstateProperty(models.Model):
@@ -41,12 +43,16 @@ class EstateProperty(models.Model):
         default='new'
     )
     active = fields.Boolean(default=True)
-
     salesperson_id = fields.Many2one('res.users', string='Salesman', default=lambda self: self.env.user)
     buyer_id = fields.Many2one('res.partner', copy=False)
     offer_ids = fields.One2many('estate.property.offer', 'property_id')
     best_offer = fields.Integer(compute="_compute_best_offer")
     total_area = fields.Integer("Total Area (sqm)", compute="_compute_total_area")
+
+    _sql_constraints = [
+        ('check_expected_price', 'check(expected_price > 0)', 'The expected price must be strictly positive'),
+        ('check_selling_price', 'check(selling_price >= 0)', 'The selling price must be positive')
+    ]
 
     @api.depends('living_area', 'garden_area')
     def _compute_total_area(self):
@@ -62,7 +68,7 @@ class EstateProperty(models.Model):
 
     def action_sold(self):
         if self.state == 'canceled':
-            raise exceptions.UserError("Canceled property cannot be sold.")
+            raise UserError("Canceled property cannot be sold.")
         self.state = 'sold'
         return
 
@@ -71,6 +77,15 @@ class EstateProperty(models.Model):
             raise exceptions.UserError("Sold property cannot be canceled.")
         self.state = 'canceled'
         return
+
+    @api.constrains('expected_price', 'selling_price')
+    def _check_selling_price(self):
+        for rec in self:
+            if float_is_zero(rec.selling_price, precision_digits=2):
+                continue
+            if float_compare(rec.selling_price, rec.expected_price * 0.9, 2) < 0:
+                raise ValidationError(
+                    "The selling price must be at least 90% of the expected price! You must reduce the expected price if you want to accept this offer.")
 
 
 class EstatePropertyOffer(models.Model):
@@ -83,6 +98,10 @@ class EstatePropertyOffer(models.Model):
     property_id = fields.Many2one('estate.property', required=True)
     validity = fields.Integer('validity (Days)', default=7)
     date_deadline = fields.Date('Deadline', compute='_compute_date_deadline', inverse='_inverse_compute_date_deadline')
+
+    _sql_constraints = [
+        ('check_price', 'check(price > 0)', 'The price must be strictly positive')
+    ]
 
     @api.depends('validity')
     def _compute_date_deadline(self):
@@ -110,7 +129,8 @@ class EstatePropertyOffer(models.Model):
 
     def action_refused(self):
         for rec in self:
-            rec.status = 'refused'
-            rec.property_id.selling_price = 0
-            rec.property_id.buyer_id = False
+            if rec.status == 'accepted':
+                rec.status = 'refused'
+                rec.property_id.selling_price = 0
+                rec.property_id.buyer_id = False
         return
