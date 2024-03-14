@@ -1,6 +1,7 @@
-from odoo import fields, models, api, exceptions
+from odoo import fields, models, api
 from datetime import date
 from dateutil import relativedelta
+from odoo.exceptions import ValidationError, UserError
 
 
 class EstatePropertyOffer(models.Model):
@@ -11,7 +12,7 @@ class EstatePropertyOffer(models.Model):
     price = fields.Float()
     status = fields.Selection(copy=False, selection=[('accepted', 'Accepted'), ('refused', 'Refused')])
     partner_id = fields.Many2one('res.partner', required=True)
-    property_id = fields.Many2one('estate.property', required=True)
+    property_id = fields.Many2one('estate.property', required=True, ondelete="cascade")
     validity = fields.Integer('validity (Days)', default=7)
     date_deadline = fields.Date('Deadline', compute='_compute_date_deadline', inverse='_inverse_compute_date_deadline')
     property_type_id = fields.Many2one(related="property_id.property_type_id", store="True")
@@ -49,3 +50,11 @@ class EstatePropertyOffer(models.Model):
         for rec in self:
             rec.status = 'refused'
         return
+
+    @api.model
+    def create(self, vals):
+        property_id = self.env['estate.property'].browse(vals['property_id'])
+        if property_id.expected_price > vals['price']:
+            raise ValidationError(f"The offer must be higher than {property_id.expected_price}")
+        property_id.state = 'offer received'
+        return super(EstatePropertyOffer, self).create(vals)
